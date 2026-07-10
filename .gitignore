@@ -1,0 +1,4 @@
+venv/
+dataset/
+*.log
+static/uploads/*
