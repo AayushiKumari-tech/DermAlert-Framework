@@ -6,7 +6,7 @@ DermAlert is an end-to-end computer vision and machine learning framework design
 
 ---
 
-## 🚀 Key Features
+##  Key Features
 
 * **Advanced Pre-processing Pipeline:** Integrates adaptive contrast enhancement (CLAHE) and digital hair removal routines (Dull-Razor algorithm) to isolate pure lesion structures.
 * **Intelligent Inference Engine:** Employs pre-trained machine learning classifiers to calculate statistical confidence metrics for targeted regions.
@@ -15,7 +15,7 @@ DermAlert is an end-to-end computer vision and machine learning framework design
 
 ---
 
-## 📁 System Architecture & Workspace
+## System Architecture & Workspace
 
 * `app.py`: Main Flask application core handling routing and processing pipelines.
 * `model.pkl`: Pre-trained mathematical classifier core.
@@ -25,11 +25,11 @@ DermAlert is an end-to-end computer vision and machine learning framework design
 
 ---
 
-## ⚙️ Local Installation & Setup
+##  Local Installation & Setup
 
 1. **Clone the repository:**
    ```bash
    git clone [https://github.com/AayushiKumari-tech/DermAlert-Framework.git](https://github.com/AayushiKumari-tech/DermAlert-Framework.git)
    cd DermAlert-Framework
-   ## 📝 Author
+   ## Author
 * Developed by **Aayushi Kumari** - B.Tech CSE (6th Sem)

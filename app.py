@@ -8,7 +8,7 @@ from flask import Flask, render_template, request, redirect
 
 app = Flask(__name__)
 
-# Core Folder Mapping - Fixed to write strictly inside static repository
+
 UPLOAD_FOLDER = os.path.join('static', 'uploads')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
@@ -29,11 +29,11 @@ def extract_advanced_live_features(image_path, run_id):
     
     img = cv2.resize(img, (256, 256))
     
-    # 1. SOFT SURFACE BALANCING
+    
     look_up_table = np.array([((i / 255.0) ** 0.85) * 255 for i in np.arange(0, 256)]).astype("uint8")
     enhanced = cv2.LUT(img, look_up_table)
     
-    # 2. ANTI-GLARE PIPELINE
+    
     gray = cv2.cvtColor(enhanced, cv2.COLOR_BGR2GRAY)
     smooth = cv2.bilateralFilter(gray, 5, 50, 50)
     
@@ -45,7 +45,7 @@ def extract_advanced_live_features(image_path, run_id):
     hair_mask = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, clean_kernel)
     shaved = cv2.inpaint(enhanced, hair_mask, inpaintRadius=1, flags=cv2.INPAINT_TELEA)
     
-    # Force unique image files directly to static upload root
+    
     raw_name = f"raw_{run_id}.jpg"
     enhanced_name = f"enhanced_{run_id}.jpg"
     shaved_name = f"shaved_{run_id}.jpg"
@@ -54,7 +54,7 @@ def extract_advanced_live_features(image_path, run_id):
     cv2.imwrite(os.path.join(app.config['UPLOAD_FOLDER'], enhanced_name), enhanced)
     cv2.imwrite(os.path.join(app.config['UPLOAD_FOLDER'], shaved_name), shaved)
     
-    # 3. GLCM & LBP Calculations
+    
     from skimage.feature import graycomatrix, graycoprops, local_binary_pattern
     shaved_gray = cv2.cvtColor(shaved, cv2.COLOR_BGR2GRAY)
     b, g, r = cv2.split(shaved)
@@ -96,7 +96,7 @@ def upload_page():
             return redirect(request.url)
             
         if file:
-            # Clear historical cache files out of directory to prevent clutter
+            
             files_to_clean = glob.glob(os.path.join(app.config['UPLOAD_FOLDER'], '*'))
             for f in files_to_clean:
                 try: os.remove(f)
