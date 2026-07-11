@@ -31,3 +31,5 @@ DermAlert is an end-to-end computer vision and machine learning framework design
    ```bash
    git clone [https://github.com/AayushiKumari-tech/DermAlert-Framework.git](https://github.com/AayushiKumari-tech/DermAlert-Framework.git)
    cd DermAlert-Framework
+   ## 📝 Author
+* Developed by **Aayushi Kumari** - B.Tech CSE (6th Sem)
