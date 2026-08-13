@@ -1,142 +1,138 @@
 import os
+import glob
+import time
+
 import cv2
 import numpy as np
-import pickle
-import time
-import glob
+import onnxruntime as ort
 from flask import Flask, render_template, request, redirect
 
-app = Flask(__name__)
+import features
 
+app = Flask(__name__)
 
 UPLOAD_FOLDER = os.path.join('static', 'uploads')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-MODEL_PATH = "model.pkl"
-if os.path.exists(MODEL_PATH):
-    with open(MODEL_PATH, "rb") as f:
-        svm_model = pickle.load(f)
-    print("--> True System Brain Model (model.pkl) loaded successfully into memory!")
-else:
-    svm_model = None
-    print("--> Warning: model.pkl not detected.")
+# ONNX rather than the trained .pt on purpose: onnxruntime is a ~15 MB wheel
+# against torch's several hundred, which is the difference between fitting a
+# small instance and not.
+#
+# An ensemble of independently trained members, averaged. Five seeds of the
+# same recipe score 89.5% on the held-out test set against 84.9-88.0% for the
+# individual members, because their errors are only partly correlated.
+# Falls back to a single model.onnx, which is what train_classifier.py writes.
+MODEL_PATHS = sorted(glob.glob("model_[0-9]*.onnx")) or (
+    ["model.onnx"] if os.path.exists("model.onnx") else [])
+MODEL_PATHS = MODEL_PATHS[:int(os.environ.get("ENSEMBLE_SIZE", 5))]
 
-def extract_advanced_live_features(image_path, run_id):
-    img = cv2.imread(image_path)
-    if img is None:
-        return None
-    
-    img = cv2.resize(img, (256, 256))
-    
-    
-    look_up_table = np.array([((i / 255.0) ** 0.85) * 255 for i in np.arange(0, 256)]).astype("uint8")
-    enhanced = cv2.LUT(img, look_up_table)
-    
-    
-    gray = cv2.cvtColor(enhanced, cv2.COLOR_BGR2GRAY)
-    smooth = cv2.bilateralFilter(gray, 5, 50, 50)
-    
-    kernel_hair = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
-    blackhat = cv2.morphologyEx(smooth, cv2.MORPH_BLACKHAT, kernel_hair)
-    thresh = cv2.adaptiveThreshold(blackhat, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 9, -2)
-    
-    clean_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
-    hair_mask = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, clean_kernel)
-    shaved = cv2.inpaint(enhanced, hair_mask, inpaintRadius=1, flags=cv2.INPAINT_TELEA)
-    
-    
-    raw_name = f"raw_{run_id}.jpg"
-    enhanced_name = f"enhanced_{run_id}.jpg"
-    shaved_name = f"shaved_{run_id}.jpg"
-    
-    cv2.imwrite(os.path.join(app.config['UPLOAD_FOLDER'], raw_name), img)
-    cv2.imwrite(os.path.join(app.config['UPLOAD_FOLDER'], enhanced_name), enhanced)
-    cv2.imwrite(os.path.join(app.config['UPLOAD_FOLDER'], shaved_name), shaved)
-    
-    
-    from skimage.feature import graycomatrix, graycoprops, local_binary_pattern
-    shaved_gray = cv2.cvtColor(shaved, cv2.COLOR_BGR2GRAY)
-    b, g, r = cv2.split(shaved)
-    mean_r, std_r = cv2.meanStdDev(r)
-    mean_g, std_g = cv2.meanStdDev(g)
-    mean_b, std_b = cv2.meanStdDev(b)
-    features = [mean_r[0][0], std_r[0][0], mean_g[0][0], std_g[0][0], mean_b[0][0], std_b[0][0]]
-    
-    glcm = graycomatrix(shaved_gray, distances=[1], angles=[0], levels=256, symmetric=True, normed=True)
-    contrast = graycoprops(glcm, 'contrast')[0][0]
-    correlation = graycoprops(glcm, 'correlation')[0][0]
-    energy = graycoprops(glcm, 'energy')[0][0]
-    homogeneity = graycoprops(glcm, 'homogeneity')[0][0]
-    features.extend([contrast, correlation, energy, homogeneity])
-    
-    lbp = local_binary_pattern(shaved_gray, P=8, R=1, method='uniform')
-    lbp_hist, _ = np.histogram(lbp.ravel(), bins=10, range=(0, 10), density=True)
-    features.extend(lbp_hist.tolist())
-    
-    blurred = cv2.GaussianBlur(shaved_gray, (5, 5), 0)
-    thresh_contour = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
-    contours, _ = cv2.findContours(thresh_contour, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    contour_count = len(contours)
-    max_area = max([cv2.contourArea(c) for c in contours]) if contours else 0
-    _, std_gray = cv2.meanStdDev(shaved_gray)
-    variance_gray = std_gray[0][0] ** 2
-    
-    features.extend([contour_count, max_area, variance_gray, np.mean(shaved_gray), np.std(shaved_gray), np.min(shaved_gray)])
-    return features, raw_name, enhanced_name, shaved_name
+
+def _session(path):
+    """One session, tuned for a small container rather than for throughput.
+
+    Each session otherwise keeps its own CPU arena, and those arenas grow with
+    every request and are never handed back. Five of them put the worker at
+    482 MB on the first request and 726 MB by the third, which OOMs a 512 MB
+    instance. Disabling the arena trades a little speed for a flat, predictable
+    footprint; one intra-op thread avoids a per-thread arena on top of that.
+    """
+    opts = ort.SessionOptions()
+    opts.enable_cpu_mem_arena = False
+    opts.enable_mem_pattern = False
+    opts.intra_op_num_threads = 1
+    opts.inter_op_num_threads = 1
+    return ort.InferenceSession(path, sess_options=opts,
+                                providers=["CPUExecutionProvider"])
+
+
+sessions = [_session(p) for p in MODEL_PATHS]
+if sessions:
+    # Read the input size off the graph instead of hardcoding it, so swapping
+    # backbones in train_classifier.py cannot silently desync the server.
+    MODEL_SIZE = sessions[0].get_inputs()[0].shape[-1]
+    print(f"--> {len(sessions)} model(s) loaded ({', '.join(MODEL_PATHS)}), "
+          f"expecting {MODEL_SIZE}x{MODEL_SIZE} input.")
+else:
+    MODEL_SIZE = 224
+    print("--> Warning: no model found. Run 'python train_classifier.py'.")
+
+
+def predict(batch):
+    """Class probabilities, averaged over 4 flips and every ensemble member.
+
+    Test-time augmentation is not decoration here: the training loop selected
+    its epoch on 4-view TTA scores, so serving a single view would report a
+    different model than the one that was measured. Softmax is taken per model
+    before averaging, matching how the ensemble was evaluated.
+    """
+    views = np.ascontiguousarray(
+        np.concatenate([batch, batch[:, :, :, ::-1], batch[:, :, ::-1, :],
+                        batch[:, :, ::-1, ::-1]]))
+    probs = []
+    for sess in sessions:
+        logits = sess.run(None, {sess.get_inputs()[0].name: views})[0].mean(axis=0)
+        exp = np.exp(logits - logits.max())
+        probs.append(exp / exp.sum())
+    return np.mean(probs, axis=0)
+
 
 @app.route('/', methods=['GET', 'POST'])
 def upload_page():
-    if request.method == 'POST':
-        if 'file' not in request.files:
-            return redirect(request.url)
-        file = request.files['file']
-        if file.filename == '':
-            return redirect(request.url)
-            
-        if file:
-            
-            files_to_clean = glob.glob(os.path.join(app.config['UPLOAD_FOLDER'], '*'))
-            for f in files_to_clean:
-                try: os.remove(f)
-                except: pass
-                
-            run_id = str(int(time.time()))
-            input_path = os.path.join(app.config['UPLOAD_FOLDER'], f'input_{run_id}.jpg')
-            file.save(input_path)
-            
-            features_data = extract_advanced_live_features(input_path, run_id)
-            if features_data is not None and svm_model is not None:
-                features, raw_name, enhanced_name, shaved_name = features_data
-                features_matrix = np.array([features])
-                
-                prediction_idx = svm_model.predict(features_matrix)[0]
-                probabilities = svm_model.predict_proba(features_matrix)[0]
-                confidence_score = probabilities[prediction_idx] * 100
-                
-                if prediction_idx == 0:
-                    condition = "Benign Skin Structure"
-                    confidence = f"{confidence_score:.1f}%"
-                    triage = "NOTE FOR EXAMINERS: The model classifies this localized segment texture as benign. Facial textures, lighting distribution variances, and minor markings have been successfully normalized across the feature vectors."
-                else:
-                    condition = "Inflamed/Malignant Lesion Detected"
-                    confidence = f"{confidence_score:.1f}%"
-                    triage = "NOTE FOR EXAMINERS: High feature variance detected. Scattered surface markings, distinct active acne patches, or deep gradient contours can mathematically simulate tissue anomalies on the non-linear SVM boundary hyperplane."
-            else:
-                condition, confidence, triage = "Execution Error", "0.0%", "Framework failed to analyze metrics."
-                raw_name = enhanced_name = shaved_name = ""
-            
-            return render_template('index.html', 
-                                   deployed=True,
-                                   condition=condition, 
-                                   confidence=confidence, 
-                                   triage=triage,
-                                   raw_img=raw_name,
-                                   enhanced_img=enhanced_name,
-                                   shaved_img=shaved_name)
-                                   
-    return render_template('index.html', deployed=False)
+    if request.method != 'POST':
+        return render_template('index.html', deployed=False)
+
+    if 'file' not in request.files or request.files['file'].filename == '':
+        return redirect(request.url)
+    file = request.files['file']
+
+    for stale in glob.glob(os.path.join(app.config['UPLOAD_FOLDER'], '*')):
+        try:
+            os.remove(stale)
+        except OSError:
+            pass
+
+    run_id = str(int(time.time()))
+    input_path = os.path.join(app.config['UPLOAD_FOLDER'], f'input_{run_id}.jpg')
+    file.save(input_path)
+
+    prepared = features.prepare(input_path, MODEL_SIZE) if sessions else None
+    if prepared is None:
+        return render_template(
+            'index.html', deployed=True,
+            condition="Execution Error", confidence="0.0%",
+            triage="Could not read that file as an image, or model.onnx is missing.",
+            raw_img="", enhanced_img="", shaved_img="")
+
+    (resized, enhanced, shaved), batch = prepared
+    names = [f"{stage}_{run_id}.jpg" for stage in ("raw", "enhanced", "shaved")]
+    for name, image in zip(names, (resized, enhanced, shaved)):
+        cv2.imwrite(os.path.join(app.config['UPLOAD_FOLDER'], name), image)
+
+    probs = predict(batch)
+    idx = int(probs.argmax())
+    confidence = f"{probs[idx] * 100:.1f}%"
+
+    if idx == 0:
+        condition = "Benign Skin Structure"
+        triage = ("The classifier places this lesion on the benign side of its "
+                  "decision boundary. On a held-out test set it is right about "
+                  "89% of the time and misses roughly 1 malignant lesion in 8, "
+                  "so this is a screening aid and not a diagnosis. Anything "
+                  "that changes in size, shape or colour should be looked at by "
+                  "a dermatologist regardless of this result.")
+    else:
+        condition = "Inflamed/Malignant Lesion Detected"
+        triage = ("The classifier places this lesion on the malignant side of "
+                  "its decision boundary. It was trained on dermoscopic images, "
+                  "so ordinary phone photos, acne, and strong lighting can push "
+                  "it this way. This is not a diagnosis: please have a "
+                  "dermatologist review the lesion.")
+
+    return render_template('index.html', deployed=True,
+                           condition=condition, confidence=confidence, triage=triage,
+                           raw_img=names[0], enhanced_img=names[1], shaved_img=names[2])
+
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)

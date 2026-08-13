@@ -1,0 +1,8 @@
+# Training only. The deployed app needs requirements.txt alone -- it runs the
+# exported model.onnx through onnxruntime and never imports torch.
+-r requirements.txt
+torch==2.13.0
+torchvision==0.28.0
+scikit-learn==1.3.2
+onnxscript==0.7.1
+kaggle==2.2.4

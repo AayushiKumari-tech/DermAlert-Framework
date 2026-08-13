@@ -5,5 +5,7 @@ services:
     buildCommand: pip install --upgrade pip && pip install --only-binary=:all: -r requirements.txt
     startCommand: gunicorn app:app
     envVars:
+      # 3.11, not 3.10: onnxruntime publishes no 3.10 wheels past 1.16.3, and
+      # buildCommand uses --only-binary=:all:, so 3.10 fails the build outright.
       - key: PYTHON_VERSION
-        value: 3.10.0
+        value: 3.11.9

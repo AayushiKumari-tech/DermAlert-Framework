@@ -2,3 +2,14 @@ venv/
 dataset/
 *.log
 static/uploads/*
+# Sensitive API Keys & Credentials
+kaggle.json
+
+# System Junk & Mac Files
+__MACOSX/
+.DS_Store
+
+# Temporary / Output Test Images
+*.jpg
+*.png
+*.onnx
